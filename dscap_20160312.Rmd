@@ -32,3 +32,6 @@ if (!(dir.exists(data_dir))) {
 }
 ```
 
+I've also installed the `tm` package for text mining (see the paper at https://www.jstatsoft.org/article/view/v025i05).
+
+File `quiz1.R` contains my responses to this week's quiz.
