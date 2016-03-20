@@ -1,0 +1,168 @@
+---
+title: "DSC Report"
+author: "Tomás E. Tecce"
+date: "March 20, 2016"
+output:
+  html_document:
+    theme: readable
+    highlight: pygments
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Lorem ipsum sit dolor amet.
+
+
+## Downloading the data
+
+The data for this project comes from HC Corpora
+(http://www.corpora.heliohost.org/index.html), a collection of corpora for
+various languages freely available to download. The texts in the corpora
+are collected from publicly available sources by a web crawler. 
+
+The files for this project must be downloaded from the link provided in
+the course website. After extracting the downloaded zip file, we end up
+with four sets of three files:
+
+- `aa_AA.blogs.txt`: text obtained from blogs
+- `aa_AA.news.txt`: text obtained from news feeds
+- `aa_AA.twitter.txt`: text obtained from Twitter
+
+where `aa_AA` denotes language and locale and is either `de_DE` (German),
+`en_US` (English, US), `fi_FI` (Finnish) or `ru_RU` (Russian). **For this
+initial round of exploration I'll only use the English language files.**
+
+```{r data_download}
+orig_data_dir = "source_data/"
+if (!dir.exists(orig_data_dir)) { dir.create(orig_data_dir) }
+
+orig_data = "Coursera-SwiftKey.zip"
+orig_file = paste0(orig_data_dir, orig_data)
+if (!file.exists(orig_file)) {
+  fileUrl <- paste0(
+    "http://d396qusza40orc.cloudfront.net/dsscapstone/dataset/",
+    orig_data)
+  download.file(fileUrl, destfile=orig_file, method="curl")
+}
+
+data_dir = "data/"
+if (!(dir.exists(data_dir))) {
+  dir.create(data_dir)
+  unzip(orig_file, exdir=data_dir)
+}
+```
+
+
+## Selecting a data sample
+
+The following function prints some information about the data files.
+
+```{r fileinfo, warning=FALSE, cache=TRUE}
+fileInformation <- function(filepath) {
+  size <- file.info(filepath)$size/1048576
+
+  conn <- file(filepath, "r")
+  fulltext <- readLines(conn)
+  nlines <- length(fulltext)
+  
+  maxline <- 0
+  for (i in 1:nlines) {
+    linelength <- nchar(fulltext[i])
+    if (linelength > maxline) { maxline <- linelength }
+  }
+  close(conn)
+  
+  infotext <- paste0("File size: ", sprintf("%.1f", size), " MB, ",
+                     "number of lines: ", nlines, ", ",
+                     "max line length: ", maxline, " characters")
+  
+  list(size=size, nlines=nlines, maxline=maxline, infotext=infotext)
+}
+
+blog_info <- fileInformation(paste0(data_dir,"final/en_US/en_US.blogs.txt"))
+news_info <- fileInformation(paste0(data_dir,"final/en_US/en_US.news.txt"))
+twit_info <- fileInformation(paste0(data_dir,"final/en_US/en_US.twitter.txt"))
+
+blog_info[[4]]
+news_info[[4]]
+twit_info[[4]]
+```
+
+The data files are relatively large (between 150 and 200 MB) containing
+from about 900,000 lines of text in the blogs file to over 2 million in
+the Twitter file. In order to speed up data exploration and the
+development of an initial, prototype model, I'll use smaller samples from
+each of the files.
+
+The code below collects samples of lines at random from each file and
+saves them to a new set of files, to ensure reproducibility. I select
+about 20 per cent of the lines, at random, by use of the `rbinom`
+function.
+
+```{r save_sample, warning=FALSE}
+set.seed(43522)
+
+textFileSample <- function(infile, outfile, fraction=0.5) {
+  conn <- file(infile, "r")
+  fulltext <- readLines(conn)
+  nlines <- length(fulltext)
+  close(conn)
+  
+  conn <- file(outfile, "w")
+  selection <- rbinom(nlines, 1, fraction)
+  for (i in 1:nlines) {
+    if (selection[i]==1) { cat(fulltext[i], file=conn, sep="\n") }
+  }
+  close(conn)
+  
+  paste("Saved", sum(selection), "lines to file", outfile)
+}
+
+samples_dir = paste0(data_dir, "samples/")
+if (!(dir.exists(samples_dir))) {
+  dir.create(samples_dir)
+}
+
+fraction <- 0.2
+sample_file <- paste0(samples_dir, "twitter_sample.txt")
+if (!file.exists(sample_file)) {
+  textFileSample(paste0(data_dir, "final/en_US/en_US.twitter.txt"),
+                 sample_file, fraction=fraction)
+}
+
+sample_file <- paste0(samples_dir, "news_sample.txt")
+if (!file.exists(sample_file)) {
+  textFileSample(paste0(data_dir, "final/en_US/en_US.news.txt"),
+                 sample_file, fraction=fraction)
+}
+  
+sample_file <- paste0(samples_dir, "blogs_sample.txt")
+if (!file.exists(sample_file)) {
+  textFileSample(paste0(data_dir, "final/en_US/en_US.blogs.txt"),
+                 sample_file, fraction=fraction)
+}
+```
+
+
+## Data preprocessing
+
+```{r}
+library(tm)
+
+createCorpus <- function(filepath) {
+  conn <- file(filepath, "r")
+  fulltext <- readLines(conn)
+  close(conn)
+  
+  vs <- VectorSource(fulltext)
+  
+  Corpus(vs, readerControl=list(readPlain, language="en", load=TRUE))
+}
+
+twit_corpuse
+```
+
