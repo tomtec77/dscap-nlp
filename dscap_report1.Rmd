@@ -1,23 +1,42 @@
 ---
-title: "DSC Report"
+title: "Text Mining - Exploration of a Text Corpus with R"
 author: "Tomás E. Tecce"
 date: "March 20, 2016"
 output:
   html_document:
     theme: readable
     highlight: pygments
+references:
+- id: tm_r
+  title: Text mining infrastructure in R
+  author:
+  - family: Feinerer, I.
+  - family: Hornik, K.
+  - family: Meyer, D.
+  container-title: Journal of Statistical Software
+  volume: 25
+  URL: http://www.jstatsoft.org/v25/i05
+  page: 1-54
+  type: article-journal
+  issued:
+    year: 2008
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Introduction
+## Summary
 
-Lorem ipsum sit dolor amet.
+In this report I describe how to load, pre-process and explore a dataset
+of text documents using the `tm` package in the R programming language.
+The final objective of this project is to use these documents as training
+for a text predicting model. After removing frequent words, numbers and
+punctuation, I calculate the frequency of single words and pairs of words
+(two-grams) in the documents. 
 
 
-## Downloading the data
+## Source data
 
 The data for this project comes from HC Corpora
 (http://www.corpora.heliohost.org/index.html), a collection of corpora for
@@ -35,6 +54,289 @@ with four sets of three files:
 where `aa_AA` denotes language and locale and is either `de_DE` (German),
 `en_US` (English, US), `fi_FI` (Finnish) or `ru_RU` (Russian). **For this
 initial round of exploration I'll only use the English language files.**
+
+
+## Selecting a data sample
+
+The data files are relatively large (between 150 and 200 MB) containing
+from about 900,000 lines of text in the blogs file to over 2 million in
+the Twitter file (see the Appendix for detailed code and results). In
+order to speed up data exploration and the development of an initial,
+prototype model, I'll use smaller samples from each of the files. **In
+this report, for illustration purposes, I'll use a sample of approximately
+10,000 lines of text extracted at random from the news file** (1 per cent
+of the total number of lines in the file). I choose the news file for this
+initial exploration because it contains shorter lines than the blogs file
+and also because I expect the text it contains to be more gramatically 
+correct than texts in the other two files (especially the Twitter one).
+
+The lines of text are extracted using the `rbinom` function of R, and to
+ensure reproducibility the sample is saved to a file in plain text format 
+(see the Appendix for the corresponding code.)
+
+
+## Data preprocessing
+
+For this initial exploration of the data I use the `tm` text mining
+package [@tm_r]. First I load the data into a *Corpus* (a collection of
+documents) which is the main data structure used by `tm`.
+
+```{r create_corpus}
+library(tm)
+
+createCorpus <- function(filepath) {
+  conn <- file(filepath, "r")
+  fulltext <- readLines(conn)
+  close(conn)
+  
+  vs <- VectorSource(fulltext)
+  Corpus(vs, readerControl=list(readPlain, language="en", load=TRUE))
+}
+
+news_corpus <- createCorpus("data/samples/news_sample_report.txt")
+```
+
+The result is a structure of type `VCorpus` ('virtual corpus' that is,
+loaded into memory) with 10,148 documents (each line of text in the source
+is loaded as a document in the corpus). One thing I notice at this stage
+is that the text file, when loaded into R, occupies 2.5 MB whereas the
+associated VCorpus object is much larger, at 38.6 MB. This means that I
+may have to find out another method when building the predictive model, as
+converting the training datasets to VCorpus objects may not be possible
+due to memory constraints.
+
+Common data cleaning tasks associated with text mining are:
+
+- Converting the entire document to lower case
+- Removing punctuation marks (periods, commas, hyphens etc)
+- Removing stopwords (extremely common words such as "and", "or", "not",
+"in", "is" etc)
+- Removing numbers
+- Filtering out unwanted terms
+- Removing extra whitespace
+
+The `tm` package provides several function to carry out these tasks,
+which are applied to the document collection as transformations via the
+`tm_map()` function.
+
+Keeping in mind that our final goal is to develop a text prediction
+application, here I'll discuss whether the steps listed above are
+appropriate in this case.
+
+### Converting text to lower case
+
+Converting to lower case is definitely useful since I won't want to
+differentiate between e.g. "car", "Car" and "CAR". 
+
+```{r to_lowercase}
+news_corpus_proc <- tm_map(news_corpus, content_transformer(tolower))
+```
+
+### Removing stopwords
+
+Removing stopwords is also very convenient in principle, although I'm not
+too certain. Stopwords are words so common that their information value is
+very low. To check how common they are in our sample, we do a simple word
+count exercise for a small set of stopwords in the code chunk below.
+
+```{r count_words, cache=TRUE}
+countWords <- function(filepath, pattern) {
+    conn <- file(filepath, "r")
+    fulltext <- readLines(conn)
+    close(conn)
+    
+    count <- 0
+    for (i in 1:length(fulltext)) {
+        findr <- gregexpr(pattern, fulltext[i])
+        if (findr[[1]][1]>0) {
+            count <- count + length(findr[[1]])
+        }
+    }
+    count
+}
+
+news_file <- "data/samples/news_sample_report.txt"
+
+# Adding the length of the file (in lines) to count the last word in each
+# line, which is not surrounded by spaces
+totwords <- countWords(news_file, " * ") + 10148
+
+# Count the ocurrences of very common stopwords
+mystopwords <- c(" [Aa]nd ", " [Ff]or ", " [Ii]n ", " [Ii]s ", " [Ii]t ",
+                 " [Nn]ot ", " [Oo]n ", " [Tt]he ", " [Tt]o ")
+totstops <- sum(sapply(mystopwords,
+                       function(x) { countWords(news_file, x) }))
+totstops/totwords
+```
+
+That is, **the small list of stopwords considered here accounts for almost
+16 per cent of the total words in the sample data**. If we let them in the
+sample, when considering two- and three-grams (sequences of 2 or 3
+consecutive words) two-grams consisting of e.g. "and the", "for the", "or
+the" will overwhelmingly dominate the rest of possible two-grams. I prefer
+to start with a model that attempts to predict without the use of
+stopwords, and will consider adding them to the training data if the
+performance of the first model needs improvement.
+
+Fortunately I do not need to compile a list of all possible stopwords - 
+the `tm` package already includes a collection of stopwords for several
+different languages.
+
+```{r remove_stopwords}
+news_corpus_proc <- tm_map(news_corpus_proc, removeWords,
+                           stopwords(kind="en"))
+```
+
+### Removing punctuation and numbers
+
+Removing punctuation marks may generate problems. For example, removing
+periods from the data may result in $n$-grams formed with words from
+different sentences. There is also the issue of the apostrophes, which in
+English are used for abbreviations and possesives. Again, I'll ignore this
+issue for the moment; I will later return to it as a possible way of
+improving model performance.
+
+In the case of numbers (e.g. "5", not the word "five") I think it would
+be very difficult to predict the actual number the user would enter after
+a phrase such as "I am going to buy" (if a number is entered at all).
+Therefore, for the initial approach all numbers will be removed from the
+training data.
+
+```{r remove_punctuation}
+news_corpus_proc <- tm_map(news_corpus_proc, removePunctuation)
+news_corpus_proc <- tm_map(news_corpus_proc, removeNumbers)
+```
+
+
+### Removing unwanted terms
+
+The source data contains plenty of profanity, but I don't want the final
+application to suggest foul language to the users. Thus I should create a
+blacklist of unwanted words and remove them using the `removeWords`
+transformation. However, removal of these words may further mess up the
+intelligibility of the original sentences. My approach is to leave them on
+for the time being, then apply the blacklist when the app is complete.
+
+One thing I've noticed is that whereas the Twitter and blogs files do
+contain a fair amount of profanity, I haven't found any in the sample from
+the news file, confirming my expectation that it would contain more
+"polished" language.
+
+### Whitespace cleanup
+
+The previous transformations generate a lot of extra whitespace in the
+lines of text; applying the `stripWhitespace` transformation deals with
+this problem.
+
+```{r clean_whitespace}
+news_corpus_proc <- tm_map(news_corpus_proc, stripWhitespace)
+```
+
+
+# Data exploration
+
+First I'll plot a histogram of the most common words remaining in the data
+after the cleaning. A common approach in text mining is to create a
+*term-document matrix* from a corpus: elements in this matrix represent
+the occurrence of a term (a word, or an $n$-gram) in a document of the
+corpus.
+
+```{r word_dtm}
+dtm <- DocumentTermMatrix(news_corpus_proc)
+```
+
+A problem with these matrices is that they tend to get very big, and they
+are extremely sparse. The matrix created with the above command has only
+179786 non-zero elements out of over 300 million (less than 0.06 per
+cent).
+
+The plot below shows a histogram of the ten most frequent words in the
+corpus. The most frequent word is "said", perhaps not surprisingly for a
+collection of news feeds (which many times will report on what someone
+said about a certain issue or event).
+
+```{r word_histogram, message=FALSE}
+dtm.matrix <- as.matrix(dtm)
+wordcount <- colSums(dtm.matrix)
+topten <- head(sort(wordcount, decreasing=TRUE), 10)
+
+library(reshape2)
+library(ggplot2)
+
+dfplot <- as.data.frame(melt(topten))
+dfplot$word <- dimnames(dfplot)[[1]]
+dfplot$word <- factor(dfplot$word,
+                      levels=dfplot$word[order(dfplot$value,
+                                               decreasing=TRUE)])
+
+fig <- ggplot(dfplot, aes(x=word, y=value)) + geom_bar(stat="identity")
+fig <- fig + xlab("Word in Corpus")
+fig <- fig + ylab("Count")
+print(fig)
+```
+
+Now I'll plot a histogram of the most frequent two-grams (pairs of words
+that appear together). To construct the term-document matrix for two-grams
+I use the `NGramTokenizer()` function from the `RWeka` package, which is
+passed as a control term to the `DocumentTermMatrix` function.
+
+```{r twograms}
+library(RWeka)
+
+options(mc.cores=1)
+twogramTokenizer <- function(x) {
+    NGramTokenizer(x, Weka_control(min=2, max=2))
+}
+
+dtm2 <- DocumentTermMatrix(news_corpus_proc,
+                           control=list(tokenize=twogramTokenizer))
+
+# I need to remove most of the sparse elements, otherwise I cannot
+# allocate memory for the matrix object
+dtm2_ns <- removeSparseTerms(dtm2, 0.998)
+dtm2.matrix <- as.matrix(dtm2_ns)
+
+wordcount <- colSums(dtm2.matrix)
+topten <- head(sort(wordcount, decreasing=TRUE), 10)
+
+dfplot <- as.data.frame(melt(topten))
+dfplot$word <- dimnames(dfplot)[[1]]
+dfplot$word <- factor(dfplot$word,
+                      levels=dfplot$word[order(dfplot$value,
+                                               decreasing=TRUE)])
+
+fig <- ggplot(dfplot, aes(x=word, y=value)) + geom_bar(stat="identity")
+fig <- fig + xlab("Two-grams in Corpus")
+fig <- fig + ylab("Count")
+print(fig)
+```
+
+Here the most frequent two-gram is "last year", and notice that "last
+week" is in seventh place. Based on these results, one could imagine a
+scenario where if a user inputs "last", the model predicts the most likely
+completion as "year", followed by "week" (we would like the application to
+output more than one suggestion for the user to choose from, so the result
+should be a ranking of the 5-10 most likely terms).
+
+## Next steps
+
+Up to this point, the idea for predicting text would be to generate
+two-gram and three-gram matrices, obtain the frequencies of the different
+combinations and then match a word (or group of words) entered by the user
+with the most probable $n+1$-gram.
+
+However, I'm a bit worried about the memory requirements of this approach
+- the required matrices get very large and it's very likely that for a
+decent-sized training set my available computer will get overwhelmed.
+Therefore I need to explore alternative approaches.
+
+
+## Appendix
+
+### Downloading the data files
+
+The code below creates directories to store the data, if they do not exist
+already, and downloads the zip file with the source data for this project.
 
 ```{r data_download}
 orig_data_dir = "source_data/"
@@ -57,9 +359,10 @@ if (!(dir.exists(data_dir))) {
 ```
 
 
-## Selecting a data sample
+### Obtaining file information
 
-The following function prints some information about the data files.
+The following function prints some information about the data files (size,
+number of lines, maximum size of a line).
 
 ```{r fileinfo, warning=FALSE, cache=TRUE}
 fileInformation <- function(filepath) {
@@ -76,7 +379,8 @@ fileInformation <- function(filepath) {
   }
   close(conn)
   
-  infotext <- paste0("File size: ", sprintf("%.1f", size), " MB, ",
+  infotext <- paste0("File: ", filepath, ", ",
+                     "size: ", sprintf("%.1f", size), " MB, ",
                      "number of lines: ", nlines, ", ",
                      "max line length: ", maxline, " characters")
   
@@ -92,16 +396,11 @@ news_info[[4]]
 twit_info[[4]]
 ```
 
-The data files are relatively large (between 150 and 200 MB) containing
-from about 900,000 lines of text in the blogs file to over 2 million in
-the Twitter file. In order to speed up data exploration and the
-development of an initial, prototype model, I'll use smaller samples from
-each of the files.
 
-The code below collects samples of lines at random from each file and
-saves them to a new set of files, to ensure reproducibility. I select
-about 20 per cent of the lines, at random, by use of the `rbinom`
-function.
+### Creating a sample of text
+
+This code samples (approximately) a fraction of the lines of text in a
+given file, chosen at random, and saves the output to another file.
 
 ```{r save_sample, warning=FALSE}
 set.seed(43522)
@@ -122,47 +421,19 @@ textFileSample <- function(infile, outfile, fraction=0.5) {
   paste("Saved", sum(selection), "lines to file", outfile)
 }
 
+data_dir <- "data/"
 samples_dir = paste0(data_dir, "samples/")
 if (!(dir.exists(samples_dir))) {
   dir.create(samples_dir)
 }
 
-fraction <- 0.2
-sample_file <- paste0(samples_dir, "twitter_sample.txt")
-if (!file.exists(sample_file)) {
-  textFileSample(paste0(data_dir, "final/en_US/en_US.twitter.txt"),
-                 sample_file, fraction=fraction)
-}
-
-sample_file <- paste0(samples_dir, "news_sample.txt")
+fraction <- 0.01
+sample_file <- paste0(samples_dir, "news_sample_report.txt")
 if (!file.exists(sample_file)) {
   textFileSample(paste0(data_dir, "final/en_US/en_US.news.txt"),
                  sample_file, fraction=fraction)
 }
-  
-sample_file <- paste0(samples_dir, "blogs_sample.txt")
-if (!file.exists(sample_file)) {
-  textFileSample(paste0(data_dir, "final/en_US/en_US.blogs.txt"),
-                 sample_file, fraction=fraction)
-}
 ```
 
 
-## Data preprocessing
-
-```{r}
-library(tm)
-
-createCorpus <- function(filepath) {
-  conn <- file(filepath, "r")
-  fulltext <- readLines(conn)
-  close(conn)
-  
-  vs <- VectorSource(fulltext)
-  
-  Corpus(vs, readerControl=list(readPlain, language="en", load=TRUE))
-}
-
-twit_corpuse
-```
-
+## References
